@@ -1,18 +1,21 @@
 #include <LibAPRS.h>        //Modified version of https://github.com/markqvist/LibAPRS
 #include <SoftwareSerial.h>
-#include <TinyGPS++.h>      //https://github.com/mikalhart/TinyGPSPlus
+//#include <TinyGPS++.h>      //https://github.com/mikalhart/TinyGPSPlus
+#include <TinyGPS.h>
 #include <LowPower.h>       //https://github.com/rocketscream/Low-Power
 #include <Wire.h>
 #include <Adafruit_BMP085.h>//https://github.com/adafruit/Adafruit-BMP085-Library
 #include <avr/wdt.h>
 
-#define RfPDPin     19
-#define GpsVccPin   18
-#define RfPwrHLPin  21
-#define RfPttPin    20
+#define GpsRx       2
+#define GpsTx       3
+#define RfPDPin     4
+#define GpsVccPin   7
+#define RfPwrHLPin  6
+#define RfPttPin    5
 #define BattPin     A2
-#define PIN_DRA_RX  22
-#define PIN_DRA_TX  23
+#define PIN_DRA_RX  8
+#define PIN_DRA_TX  9
 
 #define ADC_REFERENCE REF_3V3
 #define OPEN_SQUELCH false
@@ -23,29 +26,33 @@
 #define RfOFF         digitalWrite(RfPDPin, LOW)
 #define RfPwrHigh     pinMode(RfPwrHLPin, INPUT)
 #define RfPwrLow      pinMode(RfPwrHLPin, OUTPUT);digitalWrite(RfPwrHLPin, LOW)
-#define RfPttON       digitalWrite(RfPttPin, HIGH)//NPN
-#define RfPttOFF      digitalWrite(RfPttPin, LOW)
-#define AprsPinInput  pinMode(12,INPUT);pinMode(13,INPUT);pinMode(14,INPUT);pinMode(15,INPUT)
-#define AprsPinOutput pinMode(12,OUTPUT);pinMode(13,OUTPUT);pinMode(14,OUTPUT);pinMode(15,OUTPUT)
+//#define RfPttON       digitalWrite(RfPttPin, HIGH)//NPN
+//#define RfPttOFF      digitalWrite(RfPttPin, LOW)
+#define RfPttON       pinMode(RfPttPin, OUTPUT);digitalWrite(RfPttPin, HIGH)//NPN
+#define RfPttOFF      pinMode(RfPttPin, OUTPUT);digitalWrite(RfPttPin, LOW)
+#define AprsPinInput  pinMode(10,INPUT);pinMode(11,INPUT);pinMode(12,INPUT);pinMode(13,INPUT)
+#define AprsPinOutput pinMode(10,OUTPUT);pinMode(11,OUTPUT);pinMode(12,OUTPUT);pinMode(13,OUTPUT)
 
-//#define DEVMODE // Development mode. Uncomment to enable for debugging.
+#define DEVMODE // Development mode. Uncomment to enable for debugging.
 
 //****************************************************************************
-char  CallSign[7]="NOCALL"; //DO NOT FORGET TO CHANGE YOUR CALLSIGN
-int   CallNumber=9; //SSID http://www.aprs.org/aprs11/SSIDs.txt
+char  CallSign[7]="WD4VA"; //DO NOT FORGET TO CHANGE YOUR CALLSIGN
+uint8_t   CallNumber=9; //SSID http://www.aprs.org/aprs11/SSIDs.txt
 char  Symbol='>'; // '/>' for car, '/k' for truck, for more info : http://www.aprs.org/symbols/symbols-new.txt
 bool alternateSymbolTable = false ; //false = '/' , true = '\'
 
 char Frequency[9]="144.3900"; //default frequency. 144.3900 for US, 144.8000 for Europe
 
 char comment[50] = "http://www.lightaprs.com"; // Max 50 char
-char StatusMessage[50] = "LightAPRS by TA9OHC & TA2MUN"; 
+char StatusMessage[50] = "LightAPRS"; 
 //*****************************************************************************
 
 
 unsigned int   BeaconWait=60;  //seconds sleep for next beacon (TX).
-unsigned int   BattWait=60;    //seconds sleep if super capacitors/batteries are below BattMin (important if power source is solar panel) 
-float BattMin=4.5;        // min Volts to wake up.
+//unsigned int   BattWait=60;    //seconds sleep if super capacitors/batteries are below BattMin (important if power source is solar panel) 
+unsigned int   BattWait=2;    //seconds sleep if super capacitors/batteries are below BattMin (important if power source is solar panel) 
+//float BattMin=4.5;        // min Volts to wake up.
+float BattMin=4.0;        // min Volts to wake up.
 float DraHighVolt=8.0;    // max Volts for radio module (DRA818V) to transmit (TX) 1 Watt, above this transmit 0.5 Watt. Do not increase this value to avoid overheating.
 float GpsMinVolt=4.0; //min Volts for GPS to wake up. (important if power source is solar panel) 
 
@@ -69,14 +76,17 @@ boolean GpsFirstFix=false;
 static char telemetry_buff[100];// telemetry buffer
 uint16_t TxCount = 1;
 
-TinyGPSPlus gps;
+//TinyGPSPlus gps;
+TinyGPS gps;
 Adafruit_BMP085 bmp;
 String serialCommand;
 
+SoftwareSerial gpsSerial(GpsRx, GpsTx); // RX, TX
 
 void setup() {
   wdt_enable(WDTO_8S);
-  analogReference(INTERNAL2V56);
+  //analogReference(INTERNAL2V56);
+  analogReference(DEFAULT);
   pinMode(RfPDPin, OUTPUT);
   pinMode(GpsVccPin, OUTPUT);
   pinMode(RfPwrHLPin, OUTPUT);
@@ -85,15 +95,16 @@ void setup() {
   pinMode(PIN_DRA_TX,INPUT);
 
   RfOFF;
-  GpsOFF;
+  GpsON;
   RfPwrLow;
   RfPttOFF;
+  delay(1000);
   
-  Serial.begin(57600);
-  Serial1.begin(9600);
-#if defined(DEVMODE)
-  Serial.println(F("Start"));
-#endif
+  Serial.begin(115200);
+  gpsSerial.begin(9600);
+  #if defined(DEVMODE)
+    Serial.println(F("Start"));
+  #endif
       
   APRS_init(ADC_REFERENCE, OPEN_SQUELCH);
   APRS_setCallsign(CallSign,CallNumber);
@@ -110,10 +121,20 @@ void setup() {
   
   bmp.begin();
  
+  #if defined(DEVMODE)
+    Serial.println(F("()setup"));
+  #endif
+
 }
 
 void loop() {
-   wdt_reset();
+  #if defined(DEVMODE)
+    Serial.println(F("loop()"));
+  #endif
+
+  wdt_reset();
+
+  Serial.println(readBatt());
   
   if (readBatt() > BattMin) {
   
@@ -132,50 +153,33 @@ void loop() {
       
       aliveStatus = false;
       
+   } else {
+      #if defined(DEVMODE)
+        Serial.println(F("aliveStatus = false"));
+      #endif
    }
-    
-    updateGpsData(1000);
+
+    Serial.println(F("updateGpsData(5000);"));
+    updateGpsData(5000);
+//    updateGpsData(1000);
     gpsDebug();
 
+  
+    updatePosition();
+    updateTelemetry();
     
-    if ((gps.location.age() < 1000 || gps.location.isUpdated()) && gps.location.isValid()) {
-      if (gps.satellites.isValid() && (gps.satellites.value() > 3)) {
-      updatePosition();
-      updateTelemetry();
+    GpsFirstFix=true;
 
-      if((gps.satellites.value() > 7))  {
-          GpsOFF;
-      }    
-      
-      GpsFirstFix=true;
+    APRS_setPathSize(pathSize);
+    
+    //send status message every 60 minutes
+    sendStatus();       
+    sendLocation();
 
-      if(autoPathSizeHighAlt && gps.altitude.feet()>10000){
-            //force to use high altitude settings (WIDE2-n)
-            APRS_setPathSize(1);
-        } else {
-            //use defualt settings  
-            APRS_setPathSize(pathSize);
-        }
-      
-      //send status message every 60 minutes
-      if(gps.time.minute() == 30){               
-        sendStatus();       
-      } else {
+    freeMem();
+    Serial.flush();
+    sleepSeconds(BeaconWait);
 
-         sendLocation();
-
-      }
-
-      freeMem();
-      Serial.flush();
-      sleepSeconds(BeaconWait);
-
-      } else {
-#if defined(DEVMODE)
-      Serial.println(F("Not enough sattelites"));
-#endif
-      }
-    } 
   } else {
 
     sleepSeconds(BattWait);
@@ -189,13 +193,11 @@ void aprs_msg_callback(struct AX25Msg *msg) {
 }
 
 void sleepSeconds(int sec) {  
-  if(GpsFirstFix)GpsOFF;//sleep gps after first fix
   RfOFF;
   RfPttOFF;
   Serial.flush();
   wdt_disable();
   for (int i = 0; i < sec; i++) {
-    if(readBatt() < GpsMinVolt) GpsOFF;  //(for pico balloon only)
     LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_ON);   
   }
    wdt_enable(WDTO_8S);
@@ -210,34 +212,92 @@ byte configDra818(char *freq)
   RfON;
   char ack[3];
   int n;
-  delay(2000);
+
+  
+  
+  delay(500);
   char cmd[50];
-  sprintf(cmd, "AT+DMOSETGROUP=0,%s,%s,0000,4,0000", freq, freq);
-  Serial_dra.println(cmd);
+
+  
+  Serial.print(F("Clearing Serial Buffer: "));
+  ack[0] = 0;
+  ack[1] = 0;
   ack[2] = 0;
-  while (ack[2] != 0xa)
+  while (Serial_dra.available() > 0) {
+    ack[0] = ack[1];
+    ack[1] = ack[2];
+    ack[2] = Serial_dra.read();
+    Serial.print(ack[2]);
+  }
+  Serial.println();
+  
+  delay(500);
+  Serial_dra.println("AT+DMOCONNECT");
+  Serial.println(F("AT+DMOCONNECT"));
+  delay(500);
+  Serial.print(F("Response: "));
+  ack[0] = 0;
+  ack[1] = 0;
+  ack[2] = 0;
+  while (Serial_dra.available() > 0) {
+    ack[0] = ack[1];
+    ack[1] = ack[2];
+    ack[2] = Serial_dra.read();
+    Serial.print(ack[2]);
+  }
+  Serial.println();
+  sprintf(cmd, "AT+DMOSETGROUP=0,%s,%s,0000,4,0000", freq, freq);
+  Serial.println(cmd);
+  Serial_dra.println(cmd);
+  delay(500);
+  Serial.print("Response: ");
+  ack[0] = 0;
+  ack[1] = 0;
+  ack[2] = 0;
+  while (ack[2] != 0x0a && ack[1] != 0x0d && ack[0] != 0x30)
   {
     if (Serial_dra.available() > 0) {
       ack[0] = ack[1];
       ack[1] = ack[2];
       ack[2] = Serial_dra.read();
+      Serial.print(ack[2]);
+      //Serial.print(ack[2], HEX);
+      //Serial.print(",");
     }
   }
+  Serial.println();
   Serial_dra.end();
   RfOFF;
   pinMode(PIN_DRA_TX,INPUT);
 #if defined(DEVMODE)
-  if (ack[0] == 0x30) Serial.println(F("Frequency updated...")); else Serial.println(F("Frequency update error!"));
+  if (ack[0] == 0x30) {
+    Serial.println(F("Frequency updated...")); 
+  } else {
+    Serial.println(F("Frequency update error!"));
+    Serial.print("ack[0]: ");
+    Serial.println(ack[0]);
+    Serial.print("ack[1]: ");
+    Serial.println(ack[1]);
+    Serial.print("ack[2]: ");
+    Serial.println(ack[2]);
+  }
 #endif
   return (ack[0] == 0x30) ? 1 : 0;
 }
 
 void updatePosition() {
+
+  float flat, flon;
+  unsigned long age;
+  gps.f_get_position(&flat, &flon, &age);
+
+  
   // Convert and set latitude NMEA string Degree Minute Hundreths of minutes ddmm.hh[S,N].
   char latStr[10];
   int temp = 0;
 
-  double d_lat = gps.location.lat();
+//  double d_lat = gps.location.lat();
+  double d_lat = flat;
   double dm_lat = 0.0;
 
   if (d_lat < 0.0) {
@@ -264,7 +324,8 @@ void updatePosition() {
 
   // Convert and set longitude NMEA string Degree Minute Hundreths of minutes ddmm.hh[E,W].
   char lonStr[10];
-  double d_lon = gps.location.lng();
+//  double d_lon = gps.location.lng();
+  double d_lon = flon;
   double dm_lon = 0.0;
 
   if (d_lon < 0.0) {
@@ -296,13 +357,11 @@ void updatePosition() {
 
 void updateTelemetry() {
  
-  sprintf(telemetry_buff, "%03d", gps.course.isValid() ? (int)gps.course.deg() : 0);
+  telemetry_buff[0] = ' ';
   telemetry_buff[3] += '/';
-  sprintf(telemetry_buff + 4, "%03d", gps.speed.isValid() ? (int)gps.speed.knots() : 0);
   telemetry_buff[7] = '/';
   telemetry_buff[8] = 'A';
   telemetry_buff[9] = '=';
-  sprintf(telemetry_buff + 10, "%06d", (long)gps.altitude.feet());
   telemetry_buff[16] = ' ';
   sprintf(telemetry_buff + 17, "%03d", TxCount);
   telemetry_buff[20] = 'T';
@@ -320,7 +379,8 @@ void updateTelemetry() {
   dtostrf(readBatt(), 5, 2, telemetry_buff + 43);
   telemetry_buff[48] = 'V';
   telemetry_buff[49] = ' ';
-  sprintf(telemetry_buff + 50, "%02d", gps.satellites.isValid() ? (int)gps.satellites.value() : 0);
+  telemetry_buff[50] = '0';
+  telemetry_buff[51] = '0';
   telemetry_buff[52] = 'S';
   telemetry_buff[53] = ' ';
   sprintf(telemetry_buff + 54, "%s", comment);
@@ -334,83 +394,108 @@ void updateTelemetry() {
 
 void sendLocation() {
 
-#if defined(DEVMODE)
-      Serial.println(F("Location sending with comment"));
-#endif
+  #if defined(DEVMODE)
+    Serial.println(F("sendLocation(): Begin - setting RF Power level"));
+  #endif
   if (readBatt() < DraHighVolt) RfPwrHigh; //DRA Power 1 Watt
   else RfPwrLow; //DRA Power 0.5 Watt
 
-  int hh = gps.time.hour();
-  int mm = gps.time.minute();
-  int ss = gps.time.second();
+  #if defined(DEVMODE)
+    Serial.println(F("sendLocation(): Getting time..."));
+  #endif
 
   char timestamp_buff[7];
 
-  sprintf(timestamp_buff, "%02d", gps.time.isValid() ? (int)gps.time.hour() : 0);
-  sprintf(timestamp_buff + 2, "%02d", gps.time.isValid() ? (int)gps.time.minute() : 0);
-  sprintf(timestamp_buff + 4, "%02d", gps.time.isValid() ? (int)gps.time.second() : 0);
   timestamp_buff[6] = 'h';
+
+
+  
+  #if defined(DEVMODE)
+    Serial.println(F("sendLocation(): Setting pins"));
+  #endif
+  
   AprsPinOutput;
   RfON;
-  delay(2000);
+  delay(500);
+  Serial.println(F("sendLocation(): RfPttON;"));
   RfPttON;
-  delay(1000);
+  delay(2000);
+
   
+  #if defined(DEVMODE)
+    Serial.println(F("sendLocation(): APRS_sendLocWtTmStmp()"));
+  #endif
+
   APRS_sendLocWtTmStmp(telemetry_buff, strlen(telemetry_buff), timestamp_buff); //beacon with timestamp
   delay(50);
   while(digitalRead(1)){;}//LibAprs TX Led pin PB1
   delay(50);
+
+  
+  #if defined(DEVMODE)
+    Serial.println(F("sendLocation(): Disabling pins"));
+  #endif
+
+  Serial.println(F("sendLocation(): RfPttOFF;"));
   RfPttOFF;
   RfOFF;
   AprsPinInput;
-#if defined(DEVMODE)
-  Serial.println(F("Location sent with comment"));
-#endif
+  #if defined(DEVMODE)
+    Serial.println(F("sendLocation(): Sent with comment"));
+  #endif
 
   TxCount++;
 }
 
+
+
+
+
 void sendStatus() {
+  wdt_reset();
   if (readBatt() < DraHighVolt) RfPwrHigh; //DRA Power 1 Watt
   else RfPwrLow; //DRA Power 0.5 Watt
-  
+
   AprsPinOutput;
   RfON;
-  delay(2000);
-  RfPttON;
   delay(1000);
-    
-  APRS_sendStatus(StatusMessage, strlen(StatusMessage));
+  Serial.println(F("sendStatus(): RfPttON;"));
+  RfPttON;
+  delay(2000);
+  Serial.println(F("-1"));
+ // APRS_sendStatus(StatusMessage, strlen(StatusMessage));
   delay(50);
-  while(digitalRead(1)){;}//LibAprs TX Led pin PB1
+//  while(digitalRead(1)){;}//LibAprs TX Led pin PB1
   delay(50);
+  Serial.println(F("sendStatus(): RfPttOFF;"));
   RfPttOFF;
   RfOFF;
   AprsPinInput; 
-#if defined(DEVMODE)
-  Serial.println(F("Status sent"));
-#endif
-
   TxCount++;
 
 }
+
+
+
+
 
 
 static void updateGpsData(int ms)
 {
-  GpsON;
-  while (!Serial1) {
-    delayMicroseconds(1); // wait for serial port to connect.
+  while (!gpsSerial) {
+    Serial.println(F("Waiting for GPS Serial"));
+    delayMicroseconds(1000); // wait for serial port to connect.
   }
     unsigned long start = millis();
     unsigned long bekle=0;
     do
     {
-      while (Serial1.available()>0) {
+      while (gpsSerial.available()>0) {
         char c;
-        c=Serial1.read();
+        c=gpsSerial.read();
         gps.encode(c);
         bekle= millis();
+        Serial.println(F("reading GPS"));
       }
       if (bekle!=0 && bekle+10<millis())break;
     } while (millis() - start < ms);
@@ -441,24 +526,17 @@ void freeMem() {
 void gpsDebug() {
 #if defined(DEVMODE)
   Serial.println();
-  Serial.println(F("Sats HDOP Latitude   Longitude   Fix  Date       Time     Date Alt    Course Speed Card Chars Sentences Checksum"));
-  Serial.println(F("          (deg)      (deg)       Age                      Age  (m)    --- from GPS ----  RX    RX        Fail"));
-  Serial.println(F("-----------------------------------------------------------------------------------------------------------------"));
-
-  printInt(gps.satellites.value(), gps.satellites.isValid(), 5);
-  printInt(gps.hdop.value(), gps.hdop.isValid(), 5);
-  printFloat(gps.location.lat(), gps.location.isValid(), 11, 6);
-  printFloat(gps.location.lng(), gps.location.isValid(), 12, 6);
-  printInt(gps.location.age(), gps.location.isValid(), 5);
-  printDateTime(gps.date, gps.time);
-  printFloat(gps.altitude.meters(), gps.altitude.isValid(), 7, 2);
-  printFloat(gps.course.deg(), gps.course.isValid(), 7, 2);
-  printFloat(gps.speed.kmph(), gps.speed.isValid(), 6, 2);
-  printStr(gps.course.isValid() ? TinyGPSPlus::cardinal(gps.course.value()) : "*** ", 6);
-
-  printInt(gps.charsProcessed(), true, 6);
-  printInt(gps.sentencesWithFix(), true, 10);
-  printInt(gps.failedChecksum(), true, 9);
+  float flat, flon;
+  unsigned long age;
+  gps.f_get_position(&flat, &flon, &age);
+  Serial.print("LAT=");
+  Serial.print(flat == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : flat, 6);
+  Serial.print(" LON=");
+  Serial.print(flon == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : flon, 6);
+  Serial.print(" SAT=");
+  Serial.print(gps.satellites() == TinyGPS::GPS_INVALID_SATELLITES ? 0 : gps.satellites());
+  Serial.print(" PREC=");
+  Serial.print(gps.hdop() == TinyGPS::GPS_INVALID_HDOP ? 0 : gps.hdop());
   Serial.println();
 
 #endif
@@ -471,8 +549,8 @@ static void printFloat(float val, bool valid, int len, int prec)
   if (!valid)
   {
     while (len-- > 1)
-      Serial.print('*');
-    Serial.print(' ');
+      Serial.print(F("*"));
+    Serial.print(F(" "));
   }
   else
   {
@@ -481,7 +559,7 @@ static void printFloat(float val, bool valid, int len, int prec)
     int flen = prec + (val < 0.0 ? 2 : 1); // . and -
     flen += vi >= 1000 ? 4 : vi >= 100 ? 3 : vi >= 10 ? 2 : 1;
     for (int i = flen; i < len; ++i)
-      Serial.print(' ');
+      Serial.print(F(" "));
   }
 #endif
 }
@@ -501,34 +579,6 @@ static void printInt(unsigned long val, bool valid, int len)
 #endif
 }
 
-static void printDateTime(TinyGPSDate &d, TinyGPSTime &t)
-{
-#if defined(DEVMODE)
-  if (!d.isValid())
-  {
-    Serial.print(F("********** "));
-  }
-  else
-  {
-    char sz[32];
-    sprintf(sz, "%02d/%02d/%02d ", d.month(), d.day(), d.year());
-    Serial.print(sz);
-  }
-
-  if (!t.isValid())
-  {
-    Serial.print(F("******** "));
-  }
-  else
-  {
-    char sz[32];
-    sprintf(sz, "%02d:%02d:%02d ", t.hour(), t.minute(), t.second());
-    Serial.print(sz);
-  }
-
-  printInt(d.age(), d.isValid(), 5);
-#endif
-}
 
 static void printStr(const char *str, int len)
 {
